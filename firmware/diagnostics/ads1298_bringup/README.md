@@ -1,9 +1,11 @@
 # ADS1298 8-channel bring-up (ESP32-S3)
 
+Stage paused on 2026-10-13. This standalone acquisition project is retained; real EMG-to-prediction UI acceptance remains incomplete. The retired root `firmware/` scaffold is no longer a flashable application. See the [closeout record](../../../docs/project_closeout.md) and [local acquisition UI](../../../ui/README.md). Historical startup/readback successes do not prove the intermittent fault is resolved.
+
 This is a standalone ESP-IDF acquisition image. It reads eight normal
 differential ADS1298 electrode inputs before filtering, feature extraction, or
-model inference are introduced. It does **not** build or replace the existing
-12-channel acquisition firmware.
+model inference are introduced. It is independent of the portable Dense C library retained in `firmware/main`;
+there is no verified 12-channel physical acquisition application in this repository.
 
 ## Default wiring — verify before powering
 
@@ -34,7 +36,7 @@ network remain separate hardware requirements.
 ## What the image does
 
 The firmware performs a deterministic startup sequence, uses SPI Mode 1 at
-1 MHz, verifies the ADS ID and configuration readback, enables the internal
+1 MHz, reads the ADS ID and verifies configuration readback, enables the internal
 reference, disables the ADS test signal (`CONFIG2=0x00`), and selects normal
 electrode input on all eight channels (MUX=000 in `CH1SET..CH8SET`). Its
 power-on wait is 150 ms plus one RTOS tick, deliberately longer than the ADS
@@ -47,6 +49,13 @@ PGA 1/2/3/4/6/8/12; the ESP changes `CONFIG1` and all eight channel PGA fields,
 then replies with the actual setting before emitting samples. 4000 SPS is
 intentionally rejected at the present 1-MHz SPI clock because a 27-byte ADS
 frame would leave too little DRDY/RTOS timing margin.
+
+Parameter changes are committed only after CONFIG1 and all eight CHnSET
+registers read back correctly. On a write/read failure or mismatch, conversion
+stays stopped and no success response is sent; command processing remains
+available without DRDY so a later parameter command can retry. After a successful
+change, all of the first three frames are excluded as settling frames. The ID is
+printed for diagnosis; the current code does not reject an unexpected ID value.
 
 A normal frame is exactly 27 bytes:
 
@@ -65,6 +74,12 @@ A5 22 11 33 | CH1_uV(float32 LE) | ... | CH8_uV(float32 LE) | 5A
 The firmware batches up to seven scans per packet. USB output is separated
 from the DRDY/SPI task by a bounded queue, and no normal text is printed after
 the binary USB driver starts.
+
+The separate [AutoNCP candidate](../../ads1298_autoncp/README.md) reuses this
+acquisition implementation and adds an actual model startup self-test. It has
+been built for 4 MB Flash, confirmed on the connected board on 2026-09-21.
+Its model startup check ran on hardware; real-electrode inference remains unavailable. This standalone
+bring-up project remains acquisition-only.
 
 ## Build, flash, and see the eight traces
 

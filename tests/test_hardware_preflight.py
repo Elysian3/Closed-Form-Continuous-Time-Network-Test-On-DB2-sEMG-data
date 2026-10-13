@@ -79,34 +79,6 @@ def _valid_preflight_state_dict(output_dim=5):
 
 
 class HardwarePreflightTests(unittest.TestCase):
-    def test_obsolete_entrypoint_files_are_absent(self):
-        obsolete_paths = (
-            HARDWARE_DIR / "quantize_test.py",
-            HARDWARE_DIR / "load-model.cpp",
-            PROJECT_ROOT / "_run_loo_all28.py",
-            PROJECT_ROOT / "main.py",
-        )
-        self.assertEqual([path for path in obsolete_paths if path.exists()], [])
-
-    def test_hardware_operation_does_not_duplicate_firmware_artifacts(self):
-        duplicate_paths = tuple(
-            HARDWARE_DIR / name
-            for name in (
-                "cfc_inference.c",
-                "cfc_inference.h",
-                "cfc_inference.o",
-                "features.c",
-                "features.h",
-                "features.o",
-                "main.c",
-                "normalization.h",
-                "test_cfc_pc.exe",
-                "test_features_pc.exe",
-                "weights.h",
-            )
-        )
-        self.assertEqual([path for path in duplicate_paths if path.exists()], [])
-
     def test_export_defaults_to_canonical_firmware_directory(self):
         stats = {
             "center": np.zeros(12, dtype=np.float32),

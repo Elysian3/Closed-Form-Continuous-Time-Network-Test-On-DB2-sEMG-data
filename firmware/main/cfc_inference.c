@@ -19,7 +19,6 @@ static float tanh_lut   [LUT_SIZE];
 static float sigmoid_lut[LUT_SIZE];
 
 void cfc_lut_init(void) {
-    // Build activation LUTs. Weights remain in flash.
     for (int i = 0; i < LUT_SIZE; i++) {
         float x = LUT_X_MIN + (float)i * LUT_DX;
         float tx = tanhf(x);

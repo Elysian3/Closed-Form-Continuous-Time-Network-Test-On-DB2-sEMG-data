@@ -86,6 +86,8 @@ class CfCTrainingConfig:
     hidden_units: int = 64
     model_family: str = "dense_cfc_linear"
     cfc_dropout: float = 0.0
+    cfc_backbone_layers: int = 1
+    cfc_backbone_dropout: float | None = None
     batch_size: int = 128
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
@@ -555,15 +557,23 @@ class DenseCfCLinearRegressor(nn.Module):
         output_dim: int,
         hidden_units: int,
         dropout: float = 0.0,
+        *,
+        backbone_layers: int = 1,
+        backbone_dropout: float | None = None,
     ) -> None:
         super().__init__()
+        if backbone_layers < 1:
+            raise ValueError("cfc_backbone_layers must be at least 1")
+        if backbone_dropout is not None and not 0.0 <= backbone_dropout <= 1.0:
+            raise ValueError("cfc_backbone_dropout must be between 0 and 1")
         self.model_family = "dense_cfc_linear"
         self.cfc = CfC(
             input_dim,
             hidden_units,
             batch_first=True,
             return_sequences=True,
-            backbone_dropout=dropout,
+            backbone_layers=backbone_layers,
+            backbone_dropout=dropout if backbone_dropout is None else backbone_dropout,
         )
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
         self.head = nn.Linear(hidden_units, output_dim)
@@ -641,10 +651,19 @@ def build_cfc_regressor(
     hidden_units: int,
     model_family: str = "dense_cfc_linear",
     cfc_dropout: float = 0.0,
+    cfc_backbone_layers: int = 1,
+    cfc_backbone_dropout: float | None = None,
 ) -> nn.Module:
+    backbone_kwargs = {}
     if model_family == "dense_cfc_linear":
         model_type = DenseCfCLinearRegressor
+        backbone_kwargs = {
+            "backbone_layers": cfc_backbone_layers,
+            "backbone_dropout": cfc_backbone_dropout,
+        }
     elif model_family == "autoncp_cfc_linear":
+        if cfc_backbone_layers != 1 or cfc_backbone_dropout is not None:
+            raise ValueError("AutoNCP has no configurable dense backbone")
         model_type = AutoNCPCfCLinearRegressor
     else:
         raise ValueError(f"unsupported model_family: {model_family}")
@@ -653,6 +672,7 @@ def build_cfc_regressor(
         output_dim=output_dim,
         hidden_units=hidden_units,
         dropout=cfc_dropout,
+        **backbone_kwargs,
     )
 
 
@@ -1966,6 +1986,8 @@ def train_cfc_regressor(config: CfCTrainingConfig) -> dict:
         hidden_units=config.hidden_units,
         model_family=config.model_family,
         cfc_dropout=config.cfc_dropout,
+        cfc_backbone_layers=config.cfc_backbone_layers,
+        cfc_backbone_dropout=config.cfc_backbone_dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -2187,13 +2209,6 @@ def make_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [make_jsonable(item) for item in value]
     return value
-
-
-def summarize_best_epoch(history: list[dict[str, float]]) -> dict[str, float]:
-    """Extract the validation-best checkpoint record from the pretraining history."""
-    if not history:
-        raise ValueError("history is empty")
-    return min(history, key=lambda entry: entry["val_mae"])
 
 
 def save_summary(output_dir: Path, summary: dict[str, Any]) -> Path:

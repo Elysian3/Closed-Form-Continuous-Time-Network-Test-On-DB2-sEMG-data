@@ -1,5 +1,7 @@
 # ESP32-S3 ADC GPIO probe
 
+Stage paused on 2026-10-13; this standalone diagnostic is retained for reproducible pin-capability inspection. It is not the ADS1298 sampling or model deployment path. See the [closeout record](../../../docs/project_closeout.md).
+
 This standalone ESP-IDF project reports which **chip GPIO pads** map to ADC
 units and channels. It does not prove that a pin is exposed on the ESP32-S3
 Zero board or available after board-level peripheral conflicts are considered.

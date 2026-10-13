@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5ef">
+  <title>Antikythera · 让意图触手可及</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%23276b5e'/%3E%3Cpath d='M9 23L16 8l7 15M12 18h8' fill='none' stroke='%23f5f5ef' stroke-width='2.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到主要内容 / Skip to content</a>
+  <header class="header">
+    <a class="brand" href="#" id="brand" aria-label="Antikythera home">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M10 29 20 8l10 21M14 23h12"/><path class="brand-orbit" d="M6 19a14 14 0 0 1 27-4M34 23a14 14 0 0 1-25 6"/></svg>
+      <span>antikythera<span class="brand-caption">A LITTLE MORE HUMAN.</span></span>
+    </a>
+    <nav id="steps" class="steps" aria-label="适配步骤"></nav>
+    <div class="header-end"><span class="demo-tag"><i></i><span id="demo-label">交互原型</span></span><button class="icon-button" id="language-toggle" aria-label="Switch language">EN</button></div>
+  </header>
+  <main id="main" tabindex="-1"></main>
+  <footer class="footer"><span>ANTIKYTHERA / PERSONAL ADAPTATION</span><span id="footer-note">你的节奏，由你掌握。</span></footer>
+  <div id="toast" class="toast" role="status"></div>
+  <dialog id="reset-dialog"><form method="dialog"><p class="eyebrow" id="reset-kicker">重新开始</p><h2 id="reset-title">回到旅程的起点？</h2><p id="reset-copy">将清除本次演示进度，保留你的偏好设置。</p><div class="dialog-actions"><button value="cancel" class="button secondary" id="reset-cancel">继续体验</button><button value="reset" class="button" id="reset-confirm">重新开始</button></div></form></dialog>
+  <noscript>请启用 JavaScript 以体验动作引导和实时虚拟手。 / Enable JavaScript to use this prototype.</noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

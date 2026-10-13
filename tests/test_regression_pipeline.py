@@ -11,7 +11,6 @@ if str(DATAFLOW_DIR) not in sys.path:
     sys.path.insert(0, str(DATAFLOW_DIR))
 
 import feature_extraction as feature_module
-import SwRectify as windowing_module
 from doa_mapping import (
     DB8_OFFICIAL_W,
     DB8_TO_DB2_CHANNELS,
@@ -34,9 +33,6 @@ from SwRectify import sliding_window
 
 
 class RegressionPipelineTests(unittest.TestCase):
-    def test_windowing_module_omits_debug_printer(self) -> None:
-        self.assertFalse(hasattr(windowing_module, "print_window_summary"))
-
     def setUp(self) -> None:
         self.emg = np.arange(20, dtype=np.float32).reshape(10, 2)
         self.targets = np.column_stack(

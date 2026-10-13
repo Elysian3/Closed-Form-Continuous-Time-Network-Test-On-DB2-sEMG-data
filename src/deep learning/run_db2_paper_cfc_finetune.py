@@ -387,10 +387,15 @@ def validate_resume_architecture(
             "Checkpoint lacks immutable architecture metadata "
             f"{missing}; cannot safely resume. Use a checkpoint with matching CLI metadata."
         )
+    backbone_defaults = {"cfc_backbone_layers": 1, "cfc_backbone_dropout": None}
+    if current_config.model_family == "dense_cfc_linear":
+        fields += tuple(backbone_defaults)
     mismatches = {
-        field: (checkpoint_config[field], getattr(current_config, field))
+        field: (checkpoint_config.get(field, backbone_defaults.get(field)),
+                getattr(current_config, field, backbone_defaults.get(field)))
         for field in fields
-        if checkpoint_config[field] != getattr(current_config, field)
+        if checkpoint_config.get(field, backbone_defaults.get(field))
+        != getattr(current_config, field, backbone_defaults.get(field))
     }
     if mismatches:
         detail = ", ".join(
@@ -400,6 +405,7 @@ def validate_resume_architecture(
         raise ValueError(
             "Checkpoint architecture differs from the current CLI configuration "
             f"({detail}). Pass matching --hidden-units/--model-family/--cfc-dropout "
+            "and --cfc-backbone-layers/--cfc-backbone-dropout "
             "or re-pretrain."
         )
 
@@ -754,6 +760,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mu-law-mu", type=float, default=DEFAULT_MU_LAW_MU)
     parser.add_argument("--hidden-units", type=int, default=256)
     parser.add_argument(
+        "--cfc-backbone-layers", type=int, default=1,
+        help="Dense CfC backbone depth (at least 1); width stays 128. AutoNCP has no backbone.",
+    )
+    parser.add_argument(
+        "--cfc-backbone-dropout", type=float, default=None,
+        help="Dense backbone dropout; defaults to --cfc-dropout. Use 0 to isolate depth changes.",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=128,
@@ -776,7 +790,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--fine-tune-epochs", type=int, default=10)
-    parser.add_argument("--fine-tune-learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--fine-tune-learning-rate", type=float, default=1e-4,
+        help="Learning rate for head-only fine-tuning, or both target and DD optimizers in ATL.",
+    )
     parser.add_argument(
         "--target-offset-samples",
         type=int,
@@ -1447,6 +1464,8 @@ def train_model(
         hidden_units=config.hidden_units,
         model_family=config.model_family,
         cfc_dropout=config.cfc_dropout,
+        cfc_backbone_layers=config.cfc_backbone_layers,
+        cfc_backbone_dropout=config.cfc_backbone_dropout,
     )
     model = model.to(device)
     model.train()
@@ -1869,6 +1888,10 @@ def fine_tune_head(
             lr=dd_lr,
             weight_decay=config.weight_decay,
         )
+        audit.update(
+            dd_lr=dd_optimizer.param_groups[0]["lr"],
+            cfc_atl_lr=target_optimizer.param_groups[0]["lr"],
+        )
 
         loss_fn = nn.MSELoss()
 
@@ -2044,6 +2067,14 @@ def _split_sequence_split_temporal(
 
 
 def run_protocol(args: argparse.Namespace) -> dict[str, Any]:
+    backbone_layers = getattr(args, "cfc_backbone_layers", 1)
+    backbone_dropout = getattr(args, "cfc_backbone_dropout", None)
+    if backbone_layers < 1:
+        raise ValueError("--cfc-backbone-layers must be at least 1")
+    if backbone_dropout is not None and not 0.0 <= backbone_dropout <= 1.0:
+        raise ValueError("--cfc-backbone-dropout must be between 0 and 1")
+    if args.model_family == "autoncp_cfc_linear" and (backbone_layers != 1 or backbone_dropout is not None):
+        raise ValueError("AutoNCP has no configurable dense backbone")
     additional_epochs = getattr(args, "additional_pretrain_epochs", 0)
     pretrain_weights = tuple(getattr(args, "pretrain_target_weights", ()))
     if additional_epochs < 0 or (additional_epochs and not args.resume_pretrain):
@@ -2123,6 +2154,8 @@ def run_protocol(args: argparse.Namespace) -> dict[str, Any]:
         seq_stride=1,
         hidden_units=args.hidden_units,
         model_family=args.model_family,
+        cfc_backbone_layers=backbone_layers,
+        cfc_backbone_dropout=backbone_dropout,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -2311,6 +2344,8 @@ def run_protocol(args: argparse.Namespace) -> dict[str, Any]:
             hidden_units=config.hidden_units,
             model_family=config.model_family,
             cfc_dropout=config.cfc_dropout,
+            cfc_backbone_layers=config.cfc_backbone_layers,
+            cfc_backbone_dropout=config.cfc_backbone_dropout,
         )
         pretrain_model.load_state_dict(ckpt["model_state_dict"])
         pretrain_model = pretrain_model.to(device)
@@ -2515,7 +2550,7 @@ def run_protocol(args: argparse.Namespace) -> dict[str, Any]:
         return summary
 
     adaptation_mode = "atl_stateful" if args.enable_atl else "head_only"
-    adaptation_learning_rate = 1e-4 if args.enable_atl else args.fine_tune_learning_rate
+    adaptation_learning_rate = args.fine_tune_learning_rate
     adaptation_provenance = build_adaptation_provenance(
         target_support_split=target_support_split,
         target_stream_split=target_stream_split,
@@ -2546,8 +2581,8 @@ def run_protocol(args: argparse.Namespace) -> dict[str, Any]:
             source_split=normalized_source_stream,
             source_score_mask=source_stream_score_mask,
             support_score_mask=support_stream_score_mask,
-            dd_lr=1e-4,
-            cfc_atl_lr=1e-4,
+            dd_lr=adaptation_learning_rate,
+            cfc_atl_lr=adaptation_learning_rate,
             atl_subject_weight=args.atl_subject_weight,
         )
     else:

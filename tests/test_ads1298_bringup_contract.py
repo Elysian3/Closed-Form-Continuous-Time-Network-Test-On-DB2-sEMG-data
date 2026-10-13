@@ -1,8 +1,7 @@
-import unittest
 import subprocess
 import tempfile
+import unittest
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BRINGUP_ROOT = PROJECT_ROOT / "firmware" / "diagnostics" / "ads1298_bringup"
@@ -11,6 +10,120 @@ BRINGUP_SOURCE = MAIN_ROOT / "ads1298_bringup.c"
 PROTOCOL_SOURCE = MAIN_ROOT / "ads1298_protocol.c"
 PROTOCOL_HEADER = MAIN_ROOT / "ads1298_protocol.h"
 HOST_PROTOCOL_TEST = PROJECT_ROOT / "tests" / "test_ads1298_pc_protocol_host.c"
+HOST_BRINGUP_TEST = PROJECT_ROOT / "tests" / "test_ads1298_bringup_host.c"
+
+
+HOST_STUB_HEADERS = {
+    "esp_err.h": """
+#pragma once
+#include <stdint.h>
+typedef int esp_err_t;
+#define ESP_OK 0
+#define ESP_FAIL -1
+#define ESP_ERR_INVALID_ARG -2
+#define ESP_ERR_INVALID_RESPONSE -3
+#define ESP_ERR_NO_MEM -4
+#define ESP_ERROR_CHECK(value) ((void)(value))
+""",
+    "esp_rom_sys.h": """
+#pragma once
+#include <stdint.h>
+void esp_rom_delay_us(uint32_t microseconds);
+""",
+    "driver/gpio.h": """
+#pragma once
+#include <stdint.h>
+#include "esp_err.h"
+typedef int gpio_num_t;
+typedef struct { uint64_t pin_bit_mask; int mode; int pull_up_en; int pull_down_en; int intr_type; } gpio_config_t;
+#define GPIO_NUM_1 1
+#define GPIO_NUM_2 2
+#define GPIO_NUM_4 4
+#define GPIO_NUM_5 5
+#define GPIO_NUM_6 6
+#define GPIO_NUM_7 7
+#define GPIO_NUM_8 8
+#define GPIO_NUM_9 9
+#define GPIO_MODE_OUTPUT 1
+#define GPIO_MODE_INPUT 2
+#define GPIO_PULLUP_DISABLE 0
+#define GPIO_PULLDOWN_DISABLE 0
+#define GPIO_INTR_DISABLE 0
+#define GPIO_INTR_NEGEDGE 1
+#define ESP_INTR_FLAG_IRAM 0
+esp_err_t gpio_set_level(gpio_num_t gpio, uint32_t level);
+esp_err_t gpio_intr_disable(gpio_num_t gpio);
+esp_err_t gpio_intr_enable(gpio_num_t gpio);
+esp_err_t gpio_config(const gpio_config_t *config);
+esp_err_t gpio_install_isr_service(int flags);
+esp_err_t gpio_isr_handler_add(gpio_num_t gpio, void (*handler)(void *), void *arg);
+""",
+    "driver/spi_master.h": """
+#pragma once
+#include <stddef.h>
+#include "esp_err.h"
+typedef void *spi_device_handle_t;
+typedef struct { size_t length; const void *tx_buffer; void *rx_buffer; } spi_transaction_t;
+typedef struct { int mosi_io_num; int miso_io_num; int sclk_io_num; int quadwp_io_num; int quadhd_io_num; int data4_io_num; int data5_io_num; int data6_io_num; int data7_io_num; } spi_bus_config_t;
+typedef struct { int clock_speed_hz; int mode; int spics_io_num; int queue_size; } spi_device_interface_config_t;
+#define SPI2_HOST 2
+#define SPI_DMA_DISABLED 0
+esp_err_t spi_device_polling_transmit(spi_device_handle_t device, spi_transaction_t *transaction);
+esp_err_t spi_bus_initialize(int host, const spi_bus_config_t *config, int dma);
+esp_err_t spi_bus_add_device(int host, const spi_device_interface_config_t *config, spi_device_handle_t *device);
+""",
+    "driver/usb_serial_jtag.h": """
+#pragma once
+#include <stddef.h>
+#include "freertos/FreeRTOS.h"
+#include "esp_err.h"
+typedef struct { int rx_buffer_size; int tx_buffer_size; } usb_serial_jtag_driver_config_t;
+int usb_serial_jtag_write_bytes(const void *buffer, size_t length, TickType_t timeout);
+int usb_serial_jtag_read_bytes(void *buffer, size_t length, TickType_t timeout);
+esp_err_t usb_serial_jtag_driver_install(const usb_serial_jtag_driver_config_t *config);
+""",
+    "freertos/FreeRTOS.h": """
+#pragma once
+#include <stdint.h>
+typedef uint32_t TickType_t;
+typedef int BaseType_t;
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define pdTRUE 1
+#define pdFALSE 0
+#define pdPASS 1
+#define portMAX_DELAY UINT32_MAX
+#define configMAX_PRIORITIES 25
+#define IRAM_ATTR
+#define pdMS_TO_TICKS(milliseconds) (milliseconds)
+void port_stub_enter(portMUX_TYPE *lock);
+void port_stub_exit(portMUX_TYPE *lock);
+#define portENTER_CRITICAL(lock) port_stub_enter(lock)
+#define portEXIT_CRITICAL(lock) port_stub_exit(lock)
+#define portENTER_CRITICAL_ISR(lock) port_stub_enter(lock)
+#define portEXIT_CRITICAL_ISR(lock) port_stub_exit(lock)
+#define portYIELD_FROM_ISR() ((void)0)
+""",
+    "freertos/queue.h": """
+#pragma once
+#include <stddef.h>
+#include "freertos/FreeRTOS.h"
+typedef void *QueueHandle_t;
+QueueHandle_t xQueueCreate(size_t length, size_t item_size);
+BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t wait);
+BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t wait);
+BaseType_t xQueuePeek(QueueHandle_t queue, void *item, TickType_t wait);
+""",
+    "freertos/task.h": """
+#pragma once
+#include "freertos/FreeRTOS.h"
+typedef void *TaskHandle_t;
+void vTaskDelay(TickType_t ticks);
+uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t wait);
+void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *woken);
+BaseType_t xTaskCreate(void (*task)(void *), const char *name, uint32_t stack, void *arg, unsigned int priority, TaskHandle_t *handle);
+""",
+}
 
 
 class Ads1298BringupContractTests(unittest.TestCase):
@@ -145,6 +258,31 @@ class Ads1298BringupContractTests(unittest.TestCase):
                 [
                     "gcc", "-std=c11", "-Wall", "-Werror", "-I", str(MAIN_ROOT),
                     str(PROTOCOL_SOURCE), str(HOST_PROTOCOL_TEST), "-o", str(executable),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            run_result = subprocess.run([str(executable)], text=True, capture_output=True,
+                                        check=False)
+            self.assertEqual(run_result.returncode, 0, run_result.stderr)
+
+    def test_sampling_readback_and_settling_paths_run_against_host_spi_stubs(self):
+        """The real reconfiguration code must reject bad readback and discard all three frames."""
+        self.assertTrue(HOST_BRINGUP_TEST.is_file())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub_root = Path(temp_dir)
+            for relative_path, contents in HOST_STUB_HEADERS.items():
+                header = stub_root / relative_path
+                header.parent.mkdir(parents=True, exist_ok=True)
+                header.write_text(contents, encoding="utf-8")
+            executable = stub_root / "ads1298_bringup_host_test.exe"
+            compile_result = subprocess.run(
+                [
+                    "gcc", "-std=c11", "-Wall", "-Werror", "-ffunction-sections",
+                    "-Wl,--gc-sections", "-I", str(stub_root), "-I", str(MAIN_ROOT),
+                    str(HOST_BRINGUP_TEST), str(PROTOCOL_SOURCE), "-o", str(executable),
                 ],
                 text=True,
                 capture_output=True,

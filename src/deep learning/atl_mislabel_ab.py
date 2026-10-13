@@ -176,6 +176,8 @@ def load_pretrain_model(path, device):
         hidden_units=cfg.get("hidden_units", 512),
         model_family=cfg.get("model_family", "dense_cfc_linear"),
         cfc_dropout=cfg.get("cfc_dropout", 0.0),
+        cfc_backbone_layers=cfg.get("cfc_backbone_layers", 1),
+        cfc_backbone_dropout=cfg.get("cfc_backbone_dropout"),
     )
     model.load_state_dict(ckpt["model_state_dict"])
     return model.to(device)

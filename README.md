@@ -1,183 +1,61 @@
-idf.py build &&
-Set-Location -Path "D:\Project Antikythera\firmware"
-
 # Project Antikythera
 
-Project Antikythera decodes 12-channel forearm surface EMG into the ten MCP/PIP
-CyberGlove targets used by the DB2 RoFormer paper baseline. The deployment path uses
-a dense Closed-form Continuous-time (CfC) network and targets ESP32-S3 INT8
-inference.
+Project Antikythera 研究面向资源受限假肢控制的 sEMG 连续手指目标解码，保留 DB2 训练、ATL、模型导出、八通道采集和本地界面。
 
-The J10 contract selects one-based glove channels `2, 3, 5, 6, 8, 9, 12, 13,
-16, 17` (zero-based indices `1, 2, 4, 5, 7, 8, 11, 12, 15, 16`) in paper order.
+**2026-10-13：本阶段暂时完结，开发暂停。** 已完成采集与模型内核验证；真实肌电到预测界面的端到端验收尚未完成。清理、保留依据及最终验证见 [项目收尾记录](docs/project_closeout.md)。
 
-## Target deployment configuration
+## 当前能力与边界
 
-```text
-12-channel sEMG at 2000 Hz
-  -> DC removal
-  -> offline training: zero-phase 50 Hz notch and 20-450 Hz bandpass
-  -> 200 ms windows, 50 ms stride
-  -> RMS only: 12 values per window
-  -> 8-window sequence: 550 ms signal coverage
-  -> mu-law normalization (mu=255; training statistics only)
-  -> DenseCfCLinearRegressor(input=12, hidden=256, output=10)
-  -> inverse target mu-law normalization
-  -> ten paper-selected CyberGlove targets in the original sensor scale
-```
+| 路径 | 已具备的能力 | 验证边界 |
+|---|---|---|
+| DB2 研究 | Dense CfC、AutoNCP CfC、J10、μ-law、源预训练及支持集 ATL | 研究协议与设备部署分别验证 |
+| ADS1298 / ESP32-S3 | 八通道原始采集、参数读回、AutoNCP 启动自检 | 真实电极持续推理及预测通道未接通；间歇异常根因未确定 |
+| 本地 UI | 串口采集、原始保存、40×6 与两动作计划、J10 引导 | 公共模板不是个人预测；真实 `/api/train`、`/api/live` 显式阻塞 |
+| UNO Q | Linux 原生 C NCP768 内核与量化参考一致性核验 | 合成输入短测；无 ADC、真实 EMG 或端到端验收 |
 
-The 550 ms coverage is `200 ms + 7 * 50 ms`; it is not 400 ms. The default
-10-output RMS-only model has 169,098 parameters. Weight matrices remain INT8
-in flash; biases, quantization scales, recurrent buffers, and normalization
-statistics retain their declared floating-point representations.
+UNO Q 4 GB / Debian 13.2 上，NCP768 INT8 权重、FP32 运算内核平均 **11.279283 ms**，p95 **11.330313 ms**，p99 **11.362135 ms**，最大 **11.375834 ms**。三个独立进程各运行 128 步、丢弃前 16 步，共 336 样本。历史 ESP32-S3 原始循环均值 **82.1763 ms**。结果不能代替准确性或动作到屏幕延迟；条件见 [UNO Q 报告兼教程](docs/uno_q_getting_started.md)。
 
-The headers currently checked into `firmware/main` are a legacy five-output
-compile/parity fixture and declare `TARGET_NORMALIZATION_AVAILABLE=0`. They do
-not constitute a J10 deployment artifact. Exporting a newly trained
-10-output checkpoint replaces both headers, enables target inverse
-normalization, and makes the firmware output original-scale glove targets.
-Production compilation fails closed while the legacy normalization fixture is
-present; only the PC golden tests explicitly opt into that fixture.
+## 数据与模型契约
 
-The ESP32 path uses stateful causal biquads because a real-time controller
-cannot use future samples. The current PC golden tests cover RMS, μ-law, and
-CfC inference, but not filter parity; end-to-end filter train/serve skew remains
-an explicit deployment validation gap.
+DB2 原始 EMG 为 12 通道，CLI 可显式选择通道和特征；不能与 ADS1298 物理八通道混为一谈。硬件候选 NCP768 使用八通道交错 RMS/ZC，共 **16 维输入**，完整状态 768（455/303/10 三层），输出 J10。权重 INT8 不表示全整数运算；时间步保持 `ts=1`。
 
-The acquisition code in `firmware/main/main.c` is still a hardware scaffold,
-not a verified 12-channel frontend: one 74HC4051 exposes only eight selectable
-inputs and the current ADC task is explicitly one-shot. This work verifies the
-checkpoint/export/CfC inference contract; a physical deployment still requires
-a real 12-channel acquisition design (or retraining for the verified frontend)
-and causal preprocessing parity.
+J10 一基 glove 通道顺序 `2,3,5,6,8,9,12,13,16,17`，零基 `1,2,4,5,7,8,11,12,15,16`。逆归一化后仍是原数据手套坐标，不宣称解剖角度。两动作记录绑定的 NCP512 仅证明基础检查点来源，不能写成已部署模型。
 
-Adversarial Transfer Learning (ATL) is optional. When enabled, the source model
-is frozen, a domain discriminator and target model are trained in alternating
-GAN-style optimizer steps, and the target model minimizes an explicit mapping
-loss plus its regression loss. There is no Gradient Reversal Layer (GRL).
+研究 CLI 默认 Dense、RMS、12 通道和 μ-law `mu=255`；底层 API 保留多特征及其他研究配置。恢复与导出必须匹配模型族、通道、特征顺序、归一化和目标契约。200 ms 窗长、50 ms 步进、8 窗覆盖 550 ms 历史，不等同于计算延迟。
 
-## Research API versus deployment defaults
+统计仅由监督源数据拟合。支持/查询按目标重复隔离；ATL 中未评分目标标签物理替换为 NaN，查询 EMG 仅可作为无标签因果上下文。ATL 交替 GAN 优化，无 GRL；固定轮数返回末轮，查询标签不参与训练或选模。见 [架构与协议](docs/architecture.md)。
 
-The paper-protocol CLI defaults to RMS-only input. The reusable dataflow and
-training APIs still support `mav`, `mavs`, `wl`, `zc`, `ssc`, and `rms` for
-controlled ablation studies. Feature extraction computes only requested
-features; rest-state threshold calibration runs only when ZC or SSC requires
-it. Alternative feature sets are research configurations until their INT8
-memory and PC golden tests pass.
+## 入口导航
 
-### Default migration
-
-The supported paper CLI now defaults to RMS-only input and μ-law `mu=255`.
-Earlier generic defaults used five features and `mu=2^20`; invoking the CLI
-without explicit flags therefore changes the experiment protocol. This
-migration is intentional, test-locked, and should be recorded with any result
-compared against an older checkpoint.
-
-## Code map
-
-| Path | Responsibility |
+| 入口 | 用途 |
 |---|---|
-| `src/dataflow/datapreprocess.py` | Load DB2 recordings and apply zero-phase filters |
-| `src/dataflow/SwRectify.py` | Window signals and align continuous targets |
-| `src/dataflow/feature_extraction.py` | On-demand EMG features and shared normalization math |
-| `src/dataflow/doa_mapping.py` | Paper J10 selection plus legacy five-DoA mapping |
-| `src/deep learning/train.py` | Import-only model, split, train, normalize, and evaluation library |
-| `src/deep learning/run_db2_paper_cfc_finetune.py` | Supported pretrain/fine-tune experiment CLI |
-| `src/hardwareOperation/hardware_preflight.py` | Checkpoint metadata, INT8 error, SRAM estimate, and golden tensors |
-| `src/hardwareOperation/export_weights.py` | Export weights and normalization headers to `firmware/main` |
-| `src/hardwareOperation/test_cfc_pc.c` | PC golden test using canonical firmware inference sources |
-| `src/hardwareOperation/test_features_pc.c` | PC RMS-to-CfC integration test using canonical firmware sources |
-| `firmware/main/` | Canonical portable C inference and ESP-IDF application |
+| [训练 CLI](src/deep%20learning/run_db2_paper_cfc_finetune.py) / [训练库](src/deep%20learning/train.py) | Dense / AutoNCP、状态训练、ATL 与评估 |
+| [数据流](src/dataflow/) / [硬件工具](src/hardwareOperation/) | 特征、映射、归一化、导出及 C 数值核验 |
+| [八通道固件](firmware/diagnostics/ads1298_bringup/README.md) | 独立 ESP-IDF ADS1298 工程 |
+| [AutoNCP 固件](firmware/ads1298_autoncp/README.md) | 独立 ESP-IDF 工程、启动自检、性能复现 |
+| [ADC GPIO 探针](firmware/diagnostics/adc_gpio_probe/README.md) | 芯片引脚能力诊断 |
+| [采集界面](ui/README.md) / [设计约定](DESIGN.md) | 启动、保存、流程和阻塞 |
+| [资源清单](RESOURCES.md) / [视频历史研究](docs/video_joint_angle_path.md) | 硬件依据和未采纳提案 |
 
-## Setup
+`firmware/main/` 仅保留 portable Dense C 内核、特征和历史五输出 fixture；根 `firmware/` 已不再是可刷 ESP-IDF 应用。正式构建使用独立工程。Dense fixture 声明 `TARGET_NORMALIZATION_AVAILABLE=0`，仅供显式允许 fixture 的主机测试，不能作为 J10 部署产物。
 
-Use Python 3.13 for checkpoint-based experiments. The project depends on
-PyTorch, `ncps`, NumPy, SciPy, and Matplotlib:
+## 本机启动与复现
+
+仓库根目录使用已安装依赖的 Python 3.13：
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m unittest discover -s tests -p 'test_*.py'
+& '.\ui\start.ps1'
 ```
 
-Place NinaPro DB2 files at
-`src/data/DB2/DB2_s{id}/S{id}_E{exercise}_A1.mat`.
+依赖为 NumPy、SciPy、Matplotlib、PyTorch、ncps。DB2 私有数据放在 `src/data/DB2/DB2_s{id}/S{id}_E{exercise}_A1.mat`。数据、检查点、原始采集及本机工具不随源码自动提供。浏览器检查及两动作启动见 [UI README](ui/README.md)。
 
-## Run
-
-From the repository root:
+重跑研究先查看参数、记录配置并使用新输出目录：
 
 ```powershell
-python "src/deep learning/run_db2_paper_cfc_finetune.py" `
-  --target-subject S1 `
-  --target-mapping joint_angles10 `
-  --target-offset-samples 0 `
-  --hidden-units 256 `
-  --batch-size 1024 `
-  --gpu-resident `
-  --stateful `
-  --enable-atl
+python "src/deep learning/run_db2_paper_cfc_finetune.py" --help
+python firmware/ads1298_autoncp/profile_autoncp.py --help
 ```
 
-`--stateful` applies causal TBPTT to pretraining. Pretraining and ATL run for
-their requested fixed epoch counts and return the final epoch; neither uses an
-internal validation split or checkpoint selection. ATL uses every S1 support
-label, while S1 query labels are reserved for the final zero-shot and adapted
-evaluations (query EMG may still advance the full-stream state as unlabeled
-context). Before ATL, all unscored target labels are physically replaced with
-NaN sentinels; their EMG frames and provenance remain as causal context. ATL is
-always causal/stateful when enabled. The default target
-keeps the ten paper-selected DB2 MCP/PIP channels in their declared order.
-`--target-offset-samples` is required: use `0` for synchronized angle estimation
-or `200` for 100 ms-ahead prediction at DB2's 2 kHz sampling rate. In
-stateful mode, `--batch-size 1024` is a maximum
-stream-lane count, so the actual batch cannot exceed the number of independent
-recording streams. `--train-repetitions-per-action` remains accepted for CLI
-compatibility, but it now means target-subject support repetitions per action;
-all selected source repetitions are supervised. The CLI writes resolved configuration, split sizes,
-per-target metrics, and checkpoints under `log/`.
-
-For AutoNCP training, add `--model-family autoncp_cfc_linear` to the command
-above and use a separate `--output-dir`. Dense CfC remains the default.
-`--hidden-units` is the total inter/command/motor state size and must exceed
-the target count by at least three. AutoNCP uses fixed `sparsity_level=0.5`
-and wiring seed `22222`; its masks are saved in the checkpoint. Its motor
-output has one feature per target, followed by dropout and a linear
-regression head (`Linear(10, 10)` for J10). `--cfc-dropout` applies only to
-this readout in AutoNCP mode.
-
-Stateful training carries the full hidden state. ATL aligns motor features
-(ten for J10); head-only fine-tuning updates only the linear readout.
-Chain norm diagnostics identify whether they describe the full dense state
-or the AutoNCP motor output. Resume with the same `--model-family`; dense
-checkpoints cannot initialize AutoNCP. This is a research training option:
-the existing ESP32 export supports only the dense model.
-
-## Verify
-
-The core Python regression suite uses synthetic data and requires no DB2 files:
-
-```powershell
-python -m pytest tests/
-```
-
-The PC tests compile against `firmware/main`, not copied C sources:
-
-```powershell
-gcc -O2 -std=c11 src/hardwareOperation/test_cfc_pc.c firmware/main/cfc_inference.c -lm -o test_cfc_pc
-gcc -O2 -std=c11 src/hardwareOperation/test_features_pc.c firmware/main/features.c firmware/main/cfc_inference.c -lm -o test_features_pc
-```
-
-Run both generated executables and require a zero exit code. Keep generated
-`.o` and `.exe` files out of version control.
-
-Header export fails closed unless it receives feature-normalization statistics
-and the checkpoint or stats artifact supplies target-normalization parameters.
-The latter are required so firmware returns original-scale joint angles:
-
-```powershell
-python src/hardwareOperation/export_weights.py `
-  --checkpoint log/.../model.pt `
-  --norm-stats log/.../feature_normalization.npz
-```
-
-For the detailed signal, model, adaptation, and deployment design, see
-`docs/architecture.md`.
+性能工具从 `profile.py` 迁移为 `profile_autoncp.py`，避免遮蔽标准库。`log/` 中旧名称及历史失败保留，未因收尾改写为已通过。

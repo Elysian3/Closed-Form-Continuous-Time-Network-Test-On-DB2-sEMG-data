@@ -12,7 +12,6 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CFC_SOURCE = PROJECT_ROOT / "firmware" / "main" / "cfc_inference.c"
 CFC_HEADER = PROJECT_ROOT / "firmware" / "main" / "cfc_inference.h"
-FIRMWARE_MAIN_SOURCE = PROJECT_ROOT / "firmware" / "main" / "main.c"
 EXPORTER_DIR = PROJECT_ROOT / "src" / "hardwareOperation"
 PC_CFC_TEST = EXPORTER_DIR / "test_cfc_pc.c"
 PC_FEATURE_TEST = EXPORTER_DIR / "test_features_pc.c"
@@ -468,34 +467,15 @@ int main(void) {{
         self.assertIn("target_mu_law_scale", source)
         self.assertIn("target_mu_law_center", source)
 
-    def test_firmware_prints_checkpoint_defined_output_dimension(self):
-        source = FIRMWARE_MAIN_SOURCE.read_text(encoding="utf-8")
-
-        self.assertRegex(source, r"float output\[CFC_OUTPUT_DIM\]")
-        self.assertRegex(source, r"output_idx < CFC_OUTPUT_DIM")
-        self.assertNotRegex(source, r"output\[[0-9]+\]")
-
-    def test_firmware_resets_hidden_state_once_at_startup(self):
-        source = FIRMWARE_MAIN_SOURCE.read_text(encoding="utf-8")
-        app_main = source.split("void app_main(void)", 1)[1]
-
-        self.assertEqual(app_main.count("cfc_reset_state();"), 1)
-        self.assertLess(app_main.index("cfc_lut_init();"), app_main.index("cfc_reset_state();"))
-        self.assertLess(
-            app_main.index("cfc_reset_state();"),
-            app_main.index("xTaskCreatePinnedToCore("),
-        )
-
     def test_firmware_dimensions_must_come_from_generated_weights_header(self):
         header = CFC_HEADER.read_text(encoding="utf-8")
         self.assertNotIn("#define CFC_OUTPUT_DIM     5", header)
         self.assertIn('#error "Include generated weights.h before cfc_inference.h"', header)
 
-        for source_path in (CFC_SOURCE, FIRMWARE_MAIN_SOURCE):
-            source = source_path.read_text(encoding="utf-8")
-            weights_include = source.index('#include "weights.h"')
-            inference_include = source.index('#include "cfc_inference.h"')
-            self.assertLess(weights_include, inference_include)
+        source = CFC_SOURCE.read_text(encoding="utf-8")
+        weights_include = source.index('#include "weights.h"')
+        inference_include = source.index('#include "cfc_inference.h"')
+        self.assertLess(weights_include, inference_include)
 
         checked_in_normalization = (
             PROJECT_ROOT / "firmware" / "main" / "normalization.h"

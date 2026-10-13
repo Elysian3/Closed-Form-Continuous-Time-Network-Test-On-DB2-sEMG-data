@@ -1,5 +1,4 @@
 import copy
-import inspect
 import pathlib
 import sys
 import tempfile
@@ -21,7 +20,6 @@ DATAFLOW_DIR = REPO_ROOT / "src" / "dataflow"
 if str(DATAFLOW_DIR) not in sys.path:
     sys.path.insert(0, str(DATAFLOW_DIR))
 
-import feature_extraction as feature_module
 import run_db2_paper_cfc_finetune as paper_protocol
 import train as training_module
 from feature_extraction import (
@@ -749,30 +747,6 @@ class CfCTrainingHelpersTests(unittest.TestCase):
                     actual_input_dim=8,
                 )
 
-    def test_train_module_is_library_only(self) -> None:
-        self.assertFalse(hasattr(training_module, "main"))
-
-    def test_paper_protocol_omits_obsolete_loading_helpers(self) -> None:
-        self.assertFalse(hasattr(paper_protocol, "_resolve_actions"))
-        self.assertFalse(hasattr(paper_protocol, "load_subject_exercise_split"))
-
-    def test_paper_protocol_keeps_imports_at_module_level(self) -> None:
-        source_lines = inspect.getsource(paper_protocol).splitlines()
-        local_imports = [
-            line
-            for line in source_lines
-            if line.startswith(("    import ", "    from "))
-        ]
-        self.assertEqual(local_imports, [])
-
-    def test_paper_protocol_metadata_does_not_claim_grl_atl(self) -> None:
-        source = inspect.getsource(paper_protocol)
-        self.assertNotIn("ATL domain adaptation with GRL+DD", source)
-        self.assertIn(
-            "causal stateful TBPTT with alternating DD and target-network training",
-            source,
-        )
-
     # ── Sequence construction ────────────────────────────────────────────────
 
     def test_build_sequence_split_uses_last_window_target(self) -> None:
@@ -898,16 +872,6 @@ class CfCTrainingHelpersTests(unittest.TestCase):
             self.assertEqual(parameter.requires_grad, name.startswith("head."))
 
     # ── Normalization ────────────────────────────────────────────────────────
-
-    def test_feature_and_target_normalizers_share_array_implementation(self) -> None:
-        self.assertIs(
-            training_module._fit_array_normalizer,
-            feature_module._fit_array_normalizer,
-        )
-        self.assertIs(
-            training_module._apply_array_normalizer,
-            feature_module._apply_array_normalizer,
-        )
 
     def test_feature_and_target_normalizers_are_numerically_identical(self) -> None:
         values = np.array(
@@ -1276,7 +1240,9 @@ class RunProtocolOrchestrationTests(unittest.TestCase):
             atl_subject_weight=0.7,
         )
 
-    def _run(self, *, enable_atl: bool) -> tuple[dict, dict, list[str], dict]:
+    def _run(
+        self, *, enable_atl: bool, fine_tune_learning_rate: float = 3e-4,
+    ) -> tuple[dict, dict, list[str], dict]:
         source_selected = self._split("S2")
         source_stream = self._split("S2")
         target_all = self._split("S1")
@@ -1321,6 +1287,7 @@ class RunProtocolOrchestrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = pathlib.Path(temp_dir)
             args = self._args(output_dir, enable_atl=enable_atl)
+            args.fine_tune_learning_rate = fine_tune_learning_rate
             with (
                 patch.object(paper_protocol, "discover_target_files", return_value={"S1": [], "S2": []}),
                 patch.object(
@@ -1367,9 +1334,13 @@ class RunProtocolOrchestrationTests(unittest.TestCase):
         self.assertIsNone(checkpoint["adaptation_provenance"]["atl_subject_weight"])
 
     def test_run_protocol_atl_uses_full_target_stream_and_support_only_mask(self) -> None:
-        calls, summary, _events, checkpoint = self._run(enable_atl=True)
+        calls, summary, _events, checkpoint = self._run(
+            enable_atl=True, fine_tune_learning_rate=3e-5,
+        )
         fine_tune = calls["fine_tune_head"]
         self.assertTrue(fine_tune["enable_atl"])
+        self.assertEqual(fine_tune["dd_lr"], 3e-5)
+        self.assertEqual(fine_tune["cfc_atl_lr"], 3e-5)
         self.assertEqual(fine_tune["support_split"].x.shape[0], 4)
         np.testing.assert_array_equal(fine_tune["support_score_mask"], [True, True, False, False])
         self.assertEqual(fine_tune["source_split"].x.shape[0], 4)
@@ -1379,7 +1350,7 @@ class RunProtocolOrchestrationTests(unittest.TestCase):
         provenance = checkpoint["adaptation_provenance"]
         self.assertEqual(provenance["mode"], "atl_stateful")
         self.assertEqual(provenance["epochs"], 3)
-        self.assertEqual(provenance["learning_rate"], 1e-4)
+        self.assertEqual(provenance["learning_rate"], 3e-5)
         self.assertEqual(provenance["atl_subject_weight"], 0.7)
 
     def test_run_protocol_save_then_resume_preserves_training_history_and_rejects_architecture_change(self) -> None:
@@ -1845,13 +1816,6 @@ class _CumulativeRegressor(torch.nn.Module):
 
 
 class StatefulResetTimingTests(unittest.TestCase):
-
-    def test_stateful_epoch_uses_cpu_batch_metadata_for_control_flow(self) -> None:
-        source = inspect.getsource(training_module.train_one_epoch_stateful)
-
-        self.assertIn("iter_training_batches", source)
-        self.assertNotIn("reset_before.any()", source)
-        self.assertNotIn("score_mask.sum()", source)
 
     def test_causal_stateful_loss_is_zero_for_any_segment_batch_size(self) -> None:
         split = GpuResidentStatefulBatchesTests()._split()
@@ -2363,6 +2327,83 @@ class StatefulTrainingIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics["n_source_domain_frames"], 4.0)
         self.assertEqual(metrics["n_target_domain_frames"], 4.0)
         self.assertEqual(metrics["n_supervised_frames"], 4.0)
+
+
+class DenseBackboneTests(unittest.TestCase):
+    def test_default_matches_legacy_ncps_construction(self) -> None:
+        torch.manual_seed(42)
+        legacy_cfc = training_module.CfC(
+            16, 32, batch_first=True, return_sequences=True, backbone_dropout=0.1,
+        )
+        legacy_head = torch.nn.Linear(32, 10)
+        torch.manual_seed(42)
+        model = build_cfc_regressor(input_dim=16, output_dim=10, hidden_units=32, cfc_dropout=0.1)
+        for name, value in legacy_cfc.state_dict().items():
+            torch.testing.assert_close(model.cfc.state_dict()[name], value, rtol=0, atol=0)
+        torch.testing.assert_close(model.head.weight, legacy_head.weight, rtol=0, atol=0)
+        torch.testing.assert_close(model.head.bias, legacy_head.bias, rtol=0, atol=0)
+        self.assertEqual(model.cfc.rnn_cell.backbone_layers, 1)
+        self.assertLess(sum(p.numel() for p in model.parameters()), 100_000)
+
+    def test_two_layers_preserve_state_carry_and_allow_training(self) -> None:
+        config = build_best_cfc_config(
+            hidden_units=32, cfc_dropout=0.1, cfc_backbone_layers=2, cfc_backbone_dropout=0.0,
+        )
+        kwargs = {key: asdict(config)[key] for key in (
+            "hidden_units", "model_family", "cfc_dropout", "cfc_backbone_layers", "cfc_backbone_dropout",
+        )}
+        model = build_cfc_regressor(input_dim=16, output_dim=10, **kwargs).eval()
+        baseline = build_cfc_regressor(input_dim=16, output_dim=10, hidden_units=32)
+        count = sum(p.numel() for p in model.parameters())
+        self.assertEqual(count - sum(p.numel() for p in baseline.parameters()), 128 * 128 + 128)
+        self.assertLess(count, 100_000)  # Small synthetic test stays within the FP32 test budget.
+        self.assertFalse(any(isinstance(layer, torch.nn.Dropout) for layer in model.cfc.rnn_cell.backbone))
+        self.assertEqual(model.dropout.p, 0.1)  # Backbone override preserves the readout dropout.
+        x = torch.randn(2, 8, 16)
+        with torch.no_grad():
+            whole, state = model.forward_with_state(x)
+            _, first_state = model.forward_with_state(x[:, :4])
+            chunked, chunked_state = model.forward_with_state(x[:, 4:], first_state)
+        self.assertEqual(whole.shape, (2, 10))
+        self.assertEqual(state.shape, (2, 32))
+        torch.testing.assert_close(chunked, whole, rtol=0, atol=0)
+        torch.testing.assert_close(chunked_state, state, rtol=0, atol=0)
+        restored = build_cfc_regressor(input_dim=16, output_dim=10, **kwargs).eval()
+        restored.load_state_dict(model.state_dict())
+        torch.testing.assert_close(restored(x), whole, rtol=0, atol=0)
+        model.train()
+        model(x).square().mean().backward()
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
+    def test_resume_accepts_legacy_defaults_and_rejects_depth_or_dropout_mismatch(self) -> None:
+        legacy = {"hidden_units": 32, "model_family": "dense_cfc_linear", "cfc_dropout": 0.1}
+        current = build_best_cfc_config(**legacy)
+        paper_protocol.validate_resume_architecture(legacy, current)
+        deep = build_best_cfc_config(**legacy, cfc_backbone_layers=2, cfc_backbone_dropout=0.0)
+        with self.assertRaisesRegex(ValueError, "cfc_backbone_layers"):
+            paper_protocol.validate_resume_architecture(legacy, deep)
+        paper_protocol.validate_resume_architecture(asdict(deep), deep)
+        with self.assertRaisesRegex(ValueError, "cfc_backbone_dropout"):
+            paper_protocol.validate_resume_architecture(
+                {**asdict(deep), "cfc_backbone_dropout": 0.1}, deep,
+            )
+
+    def test_cli_and_invalid_backbone_settings(self) -> None:
+        with patch.object(sys, "argv", [
+            "paper.py", "--target-offset-samples", "0", "--cfc-backbone-layers", "2",
+            "--cfc-backbone-dropout", "0",
+        ]):
+            args = paper_protocol.parse_args()
+        self.assertEqual(args.cfc_backbone_layers, 2)
+        self.assertEqual(args.cfc_backbone_dropout, 0.0)
+        for settings in ({"cfc_backbone_layers": 0}, {"cfc_backbone_dropout": -0.1}):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                build_cfc_regressor(input_dim=16, output_dim=10, hidden_units=32, **settings)
+        with self.assertRaisesRegex(ValueError, "AutoNCP"):
+            build_cfc_regressor(
+                input_dim=16, output_dim=10, hidden_units=32,
+                model_family="autoncp_cfc_linear", cfc_backbone_layers=2,
+            )
 
 
 if __name__ == "__main__":

@@ -381,17 +381,49 @@ static esp_err_t ads_apply_sampling_config(const ads_sampling_config_t *sampling
     if (result == ESP_OK) {
         result = ads_write_registers(ADS_REG_CH1SET, channel_config, ADS1298_CHANNEL_COUNT);
     }
-    const esp_err_t restart_result = ads_send_command(ADS_CMD_RDATAC);
-    if (result == ESP_OK && restart_result != ESP_OK) {
-        result = restart_result;
+    if (result == ESP_OK) {
+        uint8_t actual_config1 = 0;
+        uint8_t actual_channels[ADS1298_CHANNEL_COUNT];
+
+        result = ads_read_registers(ADS_REG_CONFIG1, &actual_config1, 1U);
+        if (result == ESP_OK && actual_config1 != sampling->config1) {
+            result = ESP_ERR_INVALID_RESPONSE;
+        }
+        if (result == ESP_OK) {
+            result = ads_read_registers(ADS_REG_CH1SET, actual_channels,
+                                        ADS1298_CHANNEL_COUNT);
+        }
+        for (size_t channel = 0;
+             result == ESP_OK && channel < ADS1298_CHANNEL_COUNT;
+             channel++) {
+            if (actual_channels[channel] != sampling->channel_set) {
+                result = ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+    if (result == ESP_OK) {
+        result = ads_send_command(ADS_CMD_RDATAC);
     }
     if (result == ESP_OK) {
         s_sampling = *sampling;
         s_settling_frames_remaining = ADS_SETTLING_FRAMES;
     }
     ESP_ERROR_CHECK(gpio_intr_enable(ADS_DRDY_GPIO));
-    ESP_ERROR_CHECK(gpio_set_level(ADS_START_GPIO, 1));
+    if (result == ESP_OK) {
+        ESP_ERROR_CHECK(gpio_set_level(ADS_START_GPIO, 1));
+    }
     return result;
+}
+
+static bool ads_discard_settling_frame(void)
+{
+    if (s_settling_frames_remaining == 0U) {
+        return false;
+    }
+
+    s_counters.discarded_settling_frames++;
+    s_settling_frames_remaining--;
+    return true;
 }
 
 static void ads_record_host_queue_drop(void)
@@ -569,7 +601,12 @@ static void ads_acquisition_task(void *arg)
 
     while (true) {
         ads_handle_control_messages();
-        const uint32_t notifications = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // A failed configuration keeps START low. Still service control messages
+        // without DRDY so a later verified reconfiguration can recover.
+        const uint32_t notifications = ulTaskNotifyTake(pdTRUE, 1U);
+        if (notifications == 0U) {
+            continue;
+        }
         if (notifications > 1U) {
             portENTER_CRITICAL(&s_counters_lock);
             s_counters.missed_before_read += notifications - 1U;
@@ -593,18 +630,17 @@ static void ads_acquisition_task(void *arg)
             continue;
         }
 
+        bool discard_settling_frame;
         portENTER_CRITICAL(&s_counters_lock);
-        if (s_settling_frames_remaining > 0U) {
-            s_counters.discarded_settling_frames++;
-            s_settling_frames_remaining--;
-        } else {
+        discard_settling_frame = ads_discard_settling_frame();
+        if (!discard_settling_frame) {
             s_counters.complete_frames++;
             s_counters.last_frame = decoded;
             s_counters.have_frame = true;
         }
         portEXIT_CRITICAL(&s_counters_lock);
 
-        if (s_streaming && s_settling_frames_remaining == 0U) {
+        if (s_streaming && !discard_settling_frame) {
             const ads_tx_message_t message = {
                 .kind = ADS_TX_SAMPLE,
                 .sampling = s_sampling,
@@ -619,6 +655,13 @@ static void ads_acquisition_task(void *arg)
 
 void app_main(void)
 {
+#ifdef ANTIKYTHERA_MODEL_BOOT_CHECK
+    extern bool antikythera_model_boot_check(void);
+    if (!antikythera_model_boot_check()) {
+        printf("Model numerical self-test failed; acquisition will not start.\n");
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+#endif
     printf("\n=== ADS1298 8-channel SPI/DRDY bring-up ===\n");
     printf("Default wiring (verify board silk-screen): DRDY=%d CS=%d START=%d SCLK=%d "
            "DOUT/MISO=%d DIN/MOSI=%d RESET=%d PWDN=%d\n",

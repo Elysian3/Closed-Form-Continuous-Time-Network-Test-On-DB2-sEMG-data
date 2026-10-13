@@ -149,9 +149,11 @@ class AutoNCPCfCTrainingTests(unittest.TestCase):
             model=pretrain["model"], support_split=support, source_split=source,
             support_score_mask=support_mask, source_score_mask=np.ones(len(source.x), dtype=bool),
             config=config, y_stats=y_stats, device=torch.device("cpu"), learning_rate=1e-3,
-            epochs=1, enable_atl=True, cfc_atl_lr=1e-3, dd_lr=1e-3,
+            epochs=1, enable_atl=True, cfc_atl_lr=3e-5, dd_lr=3e-5,
         )
         self.assertEqual(len(atl_history), 1)
+        self.assertEqual(audit["dd_lr"], 3e-5)
+        self.assertEqual(audit["cfc_atl_lr"], 3e-5)
         self.assertEqual(audit["feature_dim"], self.output_dim)  # DD consumes motor output, not state_size.
         self.assertEqual(audit["hidden_units"], adapted.cfc.state_size)
         self.assertTrue(all(np.isfinite(value) for value in atl_history[0].values()))

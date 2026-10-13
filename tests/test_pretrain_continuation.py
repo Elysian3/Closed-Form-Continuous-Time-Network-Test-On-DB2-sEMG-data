@@ -15,7 +15,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "deep learning"))
 import run_db2_paper_cfc_finetune as paper
 from train import build_best_cfc_config, build_cfc_regressor
-from tests import test_cfc_training as fixtures
+import test_cfc_training as fixtures
 
 
 class PretrainContinuationTests(unittest.TestCase):
